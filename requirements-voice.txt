@@ -1,0 +1,18 @@
+# FRIDAY voice control dependencies (Windows, Python 3.11 or 3.12)
+#
+# Install with:
+#   pip install -r requirements-voice.txt
+#
+# Notes:
+# - openai-whisper pulls in torch (CPU build is fine for tiny.en).
+# - No ffmpeg is required: friday_voice.py feeds Whisper a numpy array
+#   directly instead of an audio file.
+# - PyAudio ships prebuilt Windows wheels on PyPI for Python 3.11/3.12,
+#   so a plain pip install works. See VOICE_DEMO.md if it fails.
+
+openai-whisper
+SpeechRecognition>=3.10
+PyAudio>=0.2.13
+requests>=2.28
+pyttsx3>=2.90
+numpy
