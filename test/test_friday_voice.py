@@ -29,6 +29,14 @@ class TestLightParsing(unittest.TestCase):
         for phrase in ["turn off light", "light off", "Turn off the light."]:
             self.assertEqual(fv.parse_command(phrase), "light_off", phrase)
 
+    def test_common_mishearings_still_parse(self):
+        # Whisper often mangles short commands; these stay unambiguous
+        # because an on/off word is still required.
+        self.assertEqual(fv.parse_command("like on"), "light_on")
+        self.assertEqual(fv.parse_command("lite off"), "light_off")
+        self.assertEqual(fv.parse_command("fun off"), "fan_off")
+        self.assertEqual(fv.parse_command("van on"), "fan_on")
+
 
 class TestFanParsing(unittest.TestCase):
     def test_fan_commands(self):
@@ -184,9 +192,13 @@ class TestHttpFailureHandling(unittest.TestCase):
 
 
 class _FakeAudio:
-    """Stand-in for speech_recognition.AudioData (16 kHz, 16-bit mono)."""
+    """Stand-in for speech_recognition.AudioData (16 kHz, 16-bit mono).
 
-    def __init__(self, raw=b"\x00\x00" * 1600):
+    Defaults to a clearly audible constant tone (amplitude 3000 of 32768)
+    so it passes the silence gate; pass raw=b"\\x00\\x00" * N for silence.
+    """
+
+    def __init__(self, raw=(3000).to_bytes(2, "little", signed=True) * 1600):
         self._raw = raw
 
     def get_raw_data(self, convert_rate=None, convert_width=None):
@@ -212,6 +224,23 @@ class TestWhisperFailureHandling(unittest.TestCase):
         model.transcribe.return_value = {"text": "  turn on light  "}
         with mock.patch.object(fv, "get_whisper_model", return_value=model):
             self.assertEqual(fv.transcribe_audio(_FakeAudio()), "turn on light")
+
+    def test_near_silent_audio_skips_whisper(self):
+        model = mock.Mock()
+        with mock.patch.object(fv, "get_whisper_model", return_value=model):
+            result = fv.transcribe_audio(_FakeAudio(raw=b"\x00\x00" * 1600))
+        self.assertEqual(result, "")
+        model.transcribe.assert_not_called()
+
+    def test_transcription_uses_command_vocabulary_prompt(self):
+        model = mock.Mock()
+        model.transcribe.return_value = {"text": "fan on"}
+        with mock.patch.object(fv, "get_whisper_model", return_value=model):
+            fv.transcribe_audio(_FakeAudio())
+        kwargs = model.transcribe.call_args.kwargs
+        self.assertEqual(kwargs.get("initial_prompt"), fv.WHISPER_PROMPT)
+        self.assertEqual(kwargs.get("temperature"), 0.0)
+        self.assertFalse(kwargs.get("condition_on_previous_text"))
 
     def test_model_is_cached_not_reloaded(self):
         fake_whisper = mock.Mock()

@@ -25,6 +25,20 @@ import requests
 ESP32_BASE_URL = "http://10.36.98.43"
 
 WHISPER_MODEL_NAME = "tiny.en"   # small + fast; English commands only
+                                 # if accuracy is still poor, try "base.en"
+
+# Vocabulary hint fed to Whisper so it leans toward our command words
+# instead of guessing random sentences from short noisy clips.
+WHISPER_PROMPT = (
+    "Smart home voice commands: turn on light, turn off light, fan on, "
+    "fan off, appliance on, appliance off, relay 4 on, relay 4 off, "
+    "all off, light chalu karo, light band karo, batti band karo, "
+    "sab band karo."
+)
+
+# Clips quieter than this RMS level are treated as silence and skipped,
+# because Whisper tends to hallucinate sentences on near-silent audio.
+MIN_AUDIO_RMS = 0.003
 
 HTTP_TIMEOUT_SECONDS = 4.0       # per request to the ESP32
 LISTEN_TIMEOUT_SECONDS = 8.0     # max wait for speech to START
@@ -71,8 +85,10 @@ UNREACHABLE_REPLY = "I cannot reach the home controller."
 _ON_WORDS = {"on", "chalu", "chaalu", "shuru", "start"}
 _OFF_WORDS = {"off", "band", "bandh", "stop"}
 _ALL_WORDS = {"all", "everything", "sab", "sabkuch"}
-_LIGHT_WORDS = {"light", "lights", "batti", "bati"}
-_FAN_WORDS = {"fan", "pankha"}
+# Device word sets include common Whisper mis-hearings ("like on" for
+# "light on"); they are safe because a command still needs an on/off word.
+_LIGHT_WORDS = {"light", "lights", "lite", "like", "bright", "batti", "bati"}
+_FAN_WORDS = {"fan", "fans", "fun", "van", "pankha"}
 
 
 def normalize_text(text):
@@ -247,7 +263,19 @@ def transcribe_audio(audio_data):
         raw = audio_data.get_raw_data(convert_rate=16000, convert_width=2)
         import numpy as np
         samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-        result = model.transcribe(samples, language="en", fp16=False)
+        rms = float(np.sqrt(np.mean(samples ** 2))) if samples.size else 0.0
+        if rms < MIN_AUDIO_RMS:
+            # Near-silent clip: skip it instead of letting Whisper
+            # hallucinate a sentence out of background noise.
+            return ""
+        result = model.transcribe(
+            samples,
+            language="en",
+            fp16=False,
+            temperature=0.0,
+            condition_on_previous_text=False,
+            initial_prompt=WHISPER_PROMPT,
+        )
         return (result.get("text") or "").strip()
     except Exception as exc:
         print(f"[error] Whisper transcription failed: {exc.__class__.__name__}: {exc}")
@@ -263,13 +291,17 @@ def init_microphone():
     try:
         import speech_recognition as sr
         recognizer = sr.Recognizer()
-        recognizer.pause_threshold = 0.6
-        recognizer.dynamic_energy_threshold = True
+        recognizer.pause_threshold = 0.8
         microphone = sr.Microphone()
         with microphone as source:
             print("Calibrating microphone for ambient noise (1 second)...")
             recognizer.adjust_for_ambient_noise(source, duration=1.0)
-        print("Microphone ready.")
+        # Lock the threshold after calibration: the dynamic mode tends to
+        # drift upward in noisy rooms and then clips the start of commands.
+        recognizer.dynamic_energy_threshold = False
+        recognizer.energy_threshold = max(recognizer.energy_threshold * 1.2, 300)
+        print(f"Microphone ready (energy threshold "
+              f"{recognizer.energy_threshold:.0f}).")
         return recognizer, microphone
     except Exception as exc:
         print(f"[error] Could not initialize the microphone: "
