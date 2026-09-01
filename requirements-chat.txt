@@ -1,0 +1,7 @@
+# FRIDAY chatbot dependencies (in addition to requirements-voice.txt,
+# or standalone if you only run the chatbot)
+#
+#   py -3.12 -m pip install -r requirements-chat.txt
+
+flask>=3.0
+requests>=2.28
